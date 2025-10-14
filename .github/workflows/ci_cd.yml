@@ -10,7 +10,7 @@ on:
       - main
 
 env:
-  MIN_ACCURACY_THRESHOLD: 0.70 # <--- SET TO 0.70 (Below the current 0.7313)
+  MIN_ACCURACY_THRESHOLD: 0.70 # Set to 0.70 to pass the current 0.7313 performance
   
 jobs:
   # --- 1. Continuous Integration (Validation) ---
@@ -99,7 +99,7 @@ jobs:
           echo "Extracted Model Metric Value: $METRIC_VALUE"
           echo "accuracy=$METRIC_VALUE" >> $GITHUB_OUTPUT
 
-      # --- Quality Gate: Check Performance (Restored 'bc -l' for float comparison) ---
+      # --- Quality Gate: Check Performance (The 'bc -l' fix is crucial here) ---
       - name: Check Model Performance against Threshold
         id: check_gate
         run: |
@@ -117,7 +117,7 @@ jobs:
              exit 1
           fi
 
-          # Correct floating-point comparison using 'bc -l'
+          # ***This line ensures floating-point math is used, fixing the Bash error***
           if echo "$CURRENT_ACCURACY < $MIN_THRESHOLD" | bc -l; then
             echo "::error::Quality Gate Failed: Performance $CURRENT_ACCURACY is below $MIN_THRESHOLD."
             exit 1 

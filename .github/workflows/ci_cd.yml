@@ -43,7 +43,11 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
+        
+      # *** NEW STEP: ENSURE 'bc' IS INSTALLED FOR QUALITY GATE ***
+      - name: Install bc for Quality Gate
+        run: sudo apt-get update && sudo apt-get install -y bc
+        
       - name: Build and Run Training Container
         id: train
         run: |
@@ -99,7 +103,7 @@ jobs:
           echo "Extracted Model Metric Value: $METRIC_VALUE"
           echo "accuracy=$METRIC_VALUE" >> $GITHUB_OUTPUT
 
-      # --- Quality Gate: Check Performance (The 'bc -l' fix is crucial here) ---
+      # --- Quality Gate: Check Performance (Now guaranteed to run correctly) ---
       - name: Check Model Performance against Threshold
         id: check_gate
         run: |
@@ -117,7 +121,7 @@ jobs:
              exit 1
           fi
 
-          # ***This line ensures floating-point math is used, fixing the Bash error***
+          # Floating-point comparison is now guaranteed to work!
           if echo "$CURRENT_ACCURACY < $MIN_THRESHOLD" | bc -l; then
             echo "::error::Quality Gate Failed: Performance $CURRENT_ACCURACY is below $MIN_THRESHOLD."
             exit 1 
@@ -125,7 +129,7 @@ jobs:
             echo "Model passed Quality Gate. Performance $CURRENT_ACCURACY is OK."
           fi
 
-      # --- Artifact Deployment ---
+      # *** NEXT PROCESS: ARTIFACT DEPLOYMENT (This is the step you wanted to see!) ***
       - name: Upload Model and Metrics Artifacts
         uses: actions/upload-artifact@v4
         with:

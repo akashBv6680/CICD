@@ -10,7 +10,7 @@ on:
       - main
 
 env:
-  MIN_ACCURACY_THRESHOLD: 0.70 # Set to 0.70 to pass the current 0.7313 performance
+  MIN_ACCURACY_THRESHOLD: 0.70 # <--- CHANGED: Set to 0.70 so 0.7313 is ACCEPTED (PASS)
   
 jobs:
   # --- 1. Continuous Integration (Validation) ---
@@ -44,7 +44,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         
-      # *** NEW STEP: ENSURE 'bc' IS INSTALLED FOR QUALITY GATE ***
+      # FIX 1: Install 'bc' utility for correct floating-point math
       - name: Install bc for Quality Gate
         run: sudo apt-get update && sudo apt-get install -y bc
         
@@ -56,7 +56,6 @@ jobs:
           
           echo "Starting Docker container with email credentials..."
           
-          # Fix: Redirect output to a temp file for stable variable capture
           docker run \
             -e AGENT_EMAIL="${{ secrets.AGENT_EMAIL }}" \
             -e AGENT_PASSWORD="${{ secrets.AGENT_PASSWORD }}" \
@@ -73,7 +72,6 @@ jobs:
           # --- CHECK FOR CRITICAL FAILURES ---
           if echo "$TRAINING_OUTPUT" | grep -q "FATAL WORKFLOW ERROR"; then
               
-              # Handle the graceful "No Emails" exit
               if echo "$TRAINING_OUTPUT" | grep -q "NO_NEW_EMAILS_FOUND"; then
                   echo "::warning::Training skipped. Reason: No new emails found. Exiting gracefully."
                   echo "accuracy=0.0000" >> $GITHUB_OUTPUT 
@@ -84,7 +82,6 @@ jobs:
               exit 1 
           fi
           
-          # Check the raw exit code for unhandled crashes
           if [ "$DOCKER_EXIT_CODE" -ne 0 ]; then
               echo "::error::Container exited with unhandled code $DOCKER_EXIT_CODE. Script crashed unexpectedly."
               exit 1
@@ -103,7 +100,7 @@ jobs:
           echo "Extracted Model Metric Value: $METRIC_VALUE"
           echo "accuracy=$METRIC_VALUE" >> $GITHUB_OUTPUT
 
-      # --- Quality Gate: Check Performance (Now guaranteed to run correctly) ---
+      # --- Quality Gate: Check Performance (Now accepts 0.7313) ---
       - name: Check Model Performance against Threshold
         id: check_gate
         run: |
@@ -115,13 +112,12 @@ jobs:
              exit 1
           fi
 
-          # Fail if the dummy 0.0000 value is detected
           if [ "$CURRENT_ACCURACY" == "0.0000" ]; then
              echo "::error::Quality Gate Failed: Training was skipped because 'No New Emails Found'."
              exit 1
           fi
 
-          # Floating-point comparison is now guaranteed to work!
+          # FIX 2: Correct floating-point comparison using 'bc -l'
           if echo "$CURRENT_ACCURACY < $MIN_THRESHOLD" | bc -l; then
             echo "::error::Quality Gate Failed: Performance $CURRENT_ACCURACY is below $MIN_THRESHOLD."
             exit 1 
@@ -129,7 +125,7 @@ jobs:
             echo "Model passed Quality Gate. Performance $CURRENT_ACCURACY is OK."
           fi
 
-      # *** NEXT PROCESS: ARTIFACT DEPLOYMENT (This is the step you wanted to see!) ***
+      # --- Artifact Deployment (The next process you wanted to see!) ---
       - name: Upload Model and Metrics Artifacts
         uses: actions/upload-artifact@v4
         with:

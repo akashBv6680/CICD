@@ -10,13 +10,12 @@ on:
       - main
 
 env:
-  # Define the required accuracy threshold (your Quality Gate)
-  MIN_ACCURACY_THRESHOLD: 0.90
+  MIN_ACCURACY_THRESHOLD: 0.90 
   
 jobs:
   # --- 1. Continuous Integration (Validation) ---
-  # CRITICAL: This job must exist as it is the workflow entry point.
-  build_and_test: 
+  # NOTE: This job must exist to allow 'train_and_deploy' (which 'needs' it) to run.
+  build_and_test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -31,8 +30,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run Basic Unit Tests (Validation)
-        run: |
-          echo "CI checks passed."
+        run: echo "CI checks passed."
       
   # ----------------------------------------------------------------------
 
@@ -47,7 +45,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and Run Training Container (Final Debugging Execution)
+      - name: Build and Run Training Container (Final Execution Fix)
         id: train
         run: |
           IMAGE_NAME="ml-agent-trainer"
@@ -55,15 +53,18 @@ jobs:
           
           echo "Starting Docker container with email credentials..."
           
-          # This command attempts the run, captures output (stdout and stderr), 
-          # and uses '|| true' to prevent the CI step from immediately failing on Exit 1.
-          TRAINING_OUTPUT=$(docker run \
+          # CRITICAL FIX: Run the script and pipe all output to a temporary file (train_output.log).
+          # This avoids the fragile multi-line variable assignment, fixing the 'unexpected EOF' error.
+          docker run \
             -e AGENT_EMAIL="${{ secrets.AGENT_EMAIL }}" \
             -e AGENT_PASSWORD="${{ secrets.AGENT_PASSWORD }}" \
-            $IMAGE_NAME python train.py 2>&1) || true
-          
-          # Check the exit code of the actual docker run process (not the subshell capture)
+            $IMAGE_NAME python train.py > train_output.log 2>&1 || true
+
+          # Capture the raw exit code of the last command (docker run)
           DOCKER_EXIT_CODE=$?
+
+          # Read the file contents into the variable for processing
+          TRAINING_OUTPUT=$(cat train_output.log)
           
           echo "--- TRAINING LOG START (Includes Errors) ---"
           echo "$TRAINING_OUTPUT"
@@ -71,6 +72,66 @@ jobs:
           echo "Docker Container Exit Code was: $DOCKER_EXIT_CODE"
 
           # --- CHECK FOR CRITICAL FAILURES ---
-          # 1. Check for the custom FATAL error message (from train.py)
           if echo "$TRAINING_OUTPUT" | grep -q "FATAL WORKFLOW ERROR"; then
-              echo "::error::Critical failure detected in
+              
+              # Handle the graceful "No Emails" exit code (sys.exit(100) -> NO_NEW_EMAILS_FOUND)
+              if echo "$TRAINING_OUTPUT" | grep -q "NO_NEW_EMAILS_FOUND"; then
+                  echo "::warning::Training skipped. Reason: No new emails found. Exiting gracefully."
+                  echo "accuracy=0.0000" >> $GITHUB_OUTPUT 
+                  exit 0
+              fi
+              
+              # Handle all other fatal errors (IMAP login fail, attachment missing, etc.)
+              echo "::error::Critical failure detected in train.py. Check logs for the FULL TRACEBACK above."
+              exit 1 
+          fi
+          
+          # Check the raw exit code for unhandled crashes
+          if [ "$DOCKER_EXIT_CODE" -ne 0 ]; then
+              echo "::error::Container exited with unhandled code $DOCKER_EXIT_CODE. Script crashed unexpectedly."
+              exit 1
+          fi
+
+          # --- PARSE METRICS IF SUCCESSFUL ---
+          METRIC_LINE=$(echo "$TRAINING_OUTPUT" | grep '***METRIC_OUTPUT***')
+          
+          if [ -z "$METRIC_LINE" ]; then
+              echo "::error::Could not extract metric. Script ran, but metric line was not found."
+              exit 1 
+          fi
+          
+          # Extract the numerical value (e.g., 0.8523) and format to 4 decimal places
+          METRIC_VALUE=$(echo "$METRIC_LINE" | awk -F'=' '{print $2}' | awk -F'[*]' '{print $1}' | awk '{printf "%.4f", $1}')
+          
+          echo "Extracted Model Metric Value: $METRIC_VALUE"
+          echo "accuracy=$METRIC_VALUE" >> $GITHUB_OUTPUT # Output name is 'accuracy' for the gate check
+
+      # --- Quality Gate: Check Performance ---
+      - name: Check Model Performance against Threshold
+        id: check_gate
+        run: |
+          CURRENT_ACCURACY="${{ steps.train.outputs.accuracy }}"
+          MIN_THRESHOLD="${{ env.MIN_ACCURACY_THRESHOLD }}"
+
+          if [ -z "$CURRENT_ACCURACY" ] || [ "$CURRENT_ACCURACY" == "0.0000" ]; then
+             echo "::error::Cannot check gate: Training was skipped or accuracy is missing."
+             exit 1
+          fi
+
+          # Use 'bc' for reliable floating-point comparison
+          if echo "$CURRENT_ACCURACY < $MIN_THRESHOLD" | bc -l; then
+            echo "::error::Model failed Quality Gate. Performance $CURRENT_ACCURACY is below $MIN_THRESHOLD."
+            exit 1 
+          else
+            echo "Model passed Quality Gate. Performance $CURRENT_ACCURACY is OK."
+          fi
+
+      # --- Artifact Deployment ---
+      - name: Upload Model and Metrics Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-artifact-${{ steps.train.outputs.accuracy }}
+          path: |
+            model.pkl
+            metrics.txt
+          retention-days: 7

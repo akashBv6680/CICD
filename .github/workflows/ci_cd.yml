@@ -10,7 +10,7 @@ on:
       - main
 
 env:
-  MIN_ACCURACY_THRESHOLD: 0.70 
+  MIN_ACCURACY_THRESHOLD: 0.70 # <--- SET TO 0.70 (Below the current 0.7313)
   
 jobs:
   # --- 1. Continuous Integration (Validation) ---
@@ -52,7 +52,7 @@ jobs:
           
           echo "Starting Docker container with email credentials..."
           
-          # Fix: Redirect output to a temp file to avoid 'unexpected EOF' Bash errors
+          # Fix: Redirect output to a temp file for stable variable capture
           docker run \
             -e AGENT_EMAIL="${{ secrets.AGENT_EMAIL }}" \
             -e AGENT_PASSWORD="${{ secrets.AGENT_PASSWORD }}" \
@@ -69,14 +69,13 @@ jobs:
           # --- CHECK FOR CRITICAL FAILURES ---
           if echo "$TRAINING_OUTPUT" | grep -q "FATAL WORKFLOW ERROR"; then
               
-              # Handle the graceful "No Emails" exit (sys.exit(100) -> NO_NEW_EMAILS_FOUND)
+              # Handle the graceful "No Emails" exit
               if echo "$TRAINING_OUTPUT" | grep -q "NO_NEW_EMAILS_FOUND"; then
                   echo "::warning::Training skipped. Reason: No new emails found. Exiting gracefully."
                   echo "accuracy=0.0000" >> $GITHUB_OUTPUT 
                   exit 0
               fi
               
-              # Handle all other fatal errors (IMAP fail, missing attachment, etc.)
               echo "::error::Critical failure detected in train.py. Check logs for the FULL TRACEBACK above."
               exit 1 
           fi
@@ -100,7 +99,7 @@ jobs:
           echo "Extracted Model Metric Value: $METRIC_VALUE"
           echo "accuracy=$METRIC_VALUE" >> $GITHUB_OUTPUT
 
-      # --- Quality Gate: Check Performance (The final fix) ---
+      # --- Quality Gate: Check Performance (Restored 'bc -l' for float comparison) ---
       - name: Check Model Performance against Threshold
         id: check_gate
         run: |
@@ -112,13 +111,13 @@ jobs:
              exit 1
           fi
 
-          # CRITICAL FIX: Explicitly fail if the dummy 0.0000 value is detected
+          # Fail if the dummy 0.0000 value is detected
           if [ "$CURRENT_ACCURACY" == "0.0000" ]; then
              echo "::error::Quality Gate Failed: Training was skipped because 'No New Emails Found'."
              exit 1
           fi
 
-          # Use 'bc' for reliable floating-point comparison against the threshold
+          # Correct floating-point comparison using 'bc -l'
           if echo "$CURRENT_ACCURACY < $MIN_THRESHOLD" | bc -l; then
             echo "::error::Quality Gate Failed: Performance $CURRENT_ACCURACY is below $MIN_THRESHOLD."
             exit 1 

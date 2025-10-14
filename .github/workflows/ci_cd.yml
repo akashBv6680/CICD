@@ -11,7 +11,6 @@ on:
 
 env:
   # Define the required accuracy threshold (your Quality Gate)
-  # IMPORTANT: Change this value to test the pass/fail condition!
   MIN_ACCURACY_THRESHOLD: 0.90
   
 jobs:
@@ -30,8 +29,7 @@ jobs:
       - name: Install Dependencies
         run: pip install -r requirements.txt
 
-      - name: Run Basic Unit Tests (Simulated)
-        # In a production setting, replace this with 'pytest'
+      - name: Run Basic Unit Tests (Validation)
         run: |
           echo "Running simple CI checks..."
           python -c "assert 1 == 1"
@@ -53,26 +51,28 @@ jobs:
       # --- Training Step: Email Ingestion, Training, and Metric Extraction ---
       - name: Build and Run Training Container
         id: train
-        # The run command builds the Docker image and executes train.py inside it.
-        # We pass the email credentials securely as environment variables to the container.
         run: |
           IMAGE_NAME="ml-agent-trainer"
           docker build -t $IMAGE_NAME .
           
+          echo "Starting Docker container with email credentials..."
+          
           # Run the container and capture all output
-          # Pass the secrets as environment variables
+          # CRITICAL FIX: Ensure secrets are passed as -e arguments to the 'docker run' command
           TRAINING_OUTPUT=$(docker run \
             -e AGENT_EMAIL="${{ secrets.AGENT_EMAIL }}" \
             -e AGENT_PASSWORD="${{ secrets.AGENT_PASSWORD }}" \
             $IMAGE_NAME)
           
+          echo "--- TRAINING LOG START ---"
           echo "$TRAINING_OUTPUT"
+          echo "--- TRAINING LOG END ---"
           
           # CRITICAL: Parse the accuracy from the output string (***METRIC_OUTPUT***)
-          # We use awk and grep to reliably extract the float number.
+          # We use grep and awk to reliably extract the float number.
           ACCURACY=$(echo "$TRAINING_OUTPUT" | grep '***METRIC_OUTPUT***' | awk -F'=' '{print $2}' | awk -F'.' '{print $1"."substr($2,1,4)}')
           
-          echo "Extracted Accuracy: $ACCURACY"
+          echo "Extracted Model Accuracy: $ACCURACY"
           
           # Set the extracted accuracy as an output variable for the next steps
           echo "accuracy=$ACCURACY" >> $GITHUB_OUTPUT
@@ -83,11 +83,14 @@ jobs:
         run: |
           # Use 'bc' (basic calculator) for float comparison
           # This step FAILS the job if the accuracy is too low.
-          if echo "${{ steps.train.outputs.accuracy }} < ${{ env.MIN_ACCURACY_THRESHOLD }}" | bc -l; then
-            echo "Model failed Quality Gate. Accuracy ${{ steps.train.outputs.accuracy }} is below ${{ env.MIN_ACCURACY_THRESHOLD }}"
+          CURRENT_ACCURACY="${{ steps.train.outputs.accuracy }}"
+          MIN_THRESHOLD="${{ env.MIN_ACCURACY_THRESHOLD }}"
+
+          if [ -z "$CURRENT_ACCURACY" ] || echo "$CURRENT_ACCURACY < $MIN_THRESHOLD" | bc -l; then
+            echo "Model failed Quality Gate. Accuracy $CURRENT_ACCURACY is below $MIN_THRESHOLD."
             exit 1 # Fail the job
           else
-            echo "Model passed Quality Gate. Accuracy ${{ steps.train.outputs.accuracy }} is OK."
+            echo "Model passed Quality Gate. Accuracy $CURRENT_ACCURACY is OK."
           fi
 
       # --- Artifact Deployment ---

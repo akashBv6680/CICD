@@ -14,7 +14,6 @@ env:
   
 jobs:
   # --- 1. Continuous Integration (Validation) ---
-  # NOTE: This job must exist to allow 'train_and_deploy' (which 'needs' it) to run.
   build_and_test:
     runs-on: ubuntu-latest
     steps:
@@ -45,7 +44,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and Run Training Container (Final Execution Fix)
+      - name: Build and Run Training Container
         id: train
         run: |
           IMAGE_NAME="ml-agent-trainer"
@@ -53,17 +52,13 @@ jobs:
           
           echo "Starting Docker container with email credentials..."
           
-          # CRITICAL FIX: Run the script and pipe all output to a temporary file (train_output.log).
-          # This avoids the fragile multi-line variable assignment, fixing the 'unexpected EOF' error.
+          # Fix: Redirect output to a temp file to avoid 'unexpected EOF' Bash errors
           docker run \
             -e AGENT_EMAIL="${{ secrets.AGENT_EMAIL }}" \
             -e AGENT_PASSWORD="${{ secrets.AGENT_PASSWORD }}" \
             $IMAGE_NAME python train.py > train_output.log 2>&1 || true
 
-          # Capture the raw exit code of the last command (docker run)
           DOCKER_EXIT_CODE=$?
-
-          # Read the file contents into the variable for processing
           TRAINING_OUTPUT=$(cat train_output.log)
           
           echo "--- TRAINING LOG START (Includes Errors) ---"
@@ -74,14 +69,14 @@ jobs:
           # --- CHECK FOR CRITICAL FAILURES ---
           if echo "$TRAINING_OUTPUT" | grep -q "FATAL WORKFLOW ERROR"; then
               
-              # Handle the graceful "No Emails" exit code (sys.exit(100) -> NO_NEW_EMAILS_FOUND)
+              # Handle the graceful "No Emails" exit (sys.exit(100) -> NO_NEW_EMAILS_FOUND)
               if echo "$TRAINING_OUTPUT" | grep -q "NO_NEW_EMAILS_FOUND"; then
                   echo "::warning::Training skipped. Reason: No new emails found. Exiting gracefully."
                   echo "accuracy=0.0000" >> $GITHUB_OUTPUT 
                   exit 0
               fi
               
-              # Handle all other fatal errors (IMAP login fail, attachment missing, etc.)
+              # Handle all other fatal errors (IMAP fail, missing attachment, etc.)
               echo "::error::Critical failure detected in train.py. Check logs for the FULL TRACEBACK above."
               exit 1 
           fi
@@ -100,27 +95,32 @@ jobs:
               exit 1 
           fi
           
-          # Extract the numerical value (e.g., 0.8523) and format to 4 decimal places
           METRIC_VALUE=$(echo "$METRIC_LINE" | awk -F'=' '{print $2}' | awk -F'[*]' '{print $1}' | awk '{printf "%.4f", $1}')
           
           echo "Extracted Model Metric Value: $METRIC_VALUE"
-          echo "accuracy=$METRIC_VALUE" >> $GITHUB_OUTPUT # Output name is 'accuracy' for the gate check
+          echo "accuracy=$METRIC_VALUE" >> $GITHUB_OUTPUT
 
-      # --- Quality Gate: Check Performance ---
+      # --- Quality Gate: Check Performance (The final fix) ---
       - name: Check Model Performance against Threshold
         id: check_gate
         run: |
           CURRENT_ACCURACY="${{ steps.train.outputs.accuracy }}"
           MIN_THRESHOLD="${{ env.MIN_ACCURACY_THRESHOLD }}"
 
-          if [ -z "$CURRENT_ACCURACY" ] || [ "$CURRENT_ACCURACY" == "0.0000" ]; then
-             echo "::error::Cannot check gate: Training was skipped or accuracy is missing."
+          if [ -z "$CURRENT_ACCURACY" ]; then
+             echo "::error::Quality Gate Failed: Accuracy value is missing entirely (Workflow Logic Error)."
              exit 1
           fi
 
-          # Use 'bc' for reliable floating-point comparison
+          # CRITICAL FIX: Explicitly fail if the dummy 0.0000 value is detected
+          if [ "$CURRENT_ACCURACY" == "0.0000" ]; then
+             echo "::error::Quality Gate Failed: Training was skipped because 'No New Emails Found'."
+             exit 1
+          fi
+
+          # Use 'bc' for reliable floating-point comparison against the threshold
           if echo "$CURRENT_ACCURACY < $MIN_THRESHOLD" | bc -l; then
-            echo "::error::Model failed Quality Gate. Performance $CURRENT_ACCURACY is below $MIN_THRESHOLD."
+            echo "::error::Quality Gate Failed: Performance $CURRENT_ACCURACY is below $MIN_THRESHOLD."
             exit 1 
           else
             echo "Model passed Quality Gate. Performance $CURRENT_ACCURACY is OK."

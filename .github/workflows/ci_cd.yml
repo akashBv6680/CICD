@@ -31,15 +31,13 @@ jobs:
 
       - name: Run Basic Unit Tests (Validation)
         run: |
-          echo "Running simple CI checks..."
-          python -c "assert 1 == 1"
           echo "CI checks passed."
       
   # ----------------------------------------------------------------------
 
   # --- 2. Continuous Delivery (Training and Artifact Management) ---
   train_and_deploy:
-    needs: build_and_test # Only run if CI passes
+    needs: build_and_test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -49,7 +47,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       # --- Training Step: Email Ingestion, Training, and Metric Extraction ---
-      - name: Build and Run Training Container
+      - name: Build and Run Training Container (Robust Error Capture)
         id: train
         run: |
           IMAGE_NAME="ml-agent-trainer"
@@ -57,20 +55,33 @@ jobs:
           
           echo "Starting Docker container with email credentials..."
           
-          # Run the container and capture all output
-          # CRITICAL FIX: Ensure secrets are passed as -e arguments to the 'docker run' command
+          # CRITICAL: Run the Python script directly, redirecting stderr (2) to stdout (1).
+          # This captures the full Python traceback in the TRAINING_OUTPUT variable.
           TRAINING_OUTPUT=$(docker run \
             -e AGENT_EMAIL="${{ secrets.AGENT_EMAIL }}" \
             -e AGENT_PASSWORD="${{ secrets.AGENT_PASSWORD }}" \
-            $IMAGE_NAME)
+            $IMAGE_NAME /usr/bin/python3 train.py 2>&1)
           
-          echo "--- TRAINING LOG START ---"
+          echo "--- TRAINING LOG START (Includes Errors) ---"
           echo "$TRAINING_OUTPUT"
           echo "--- TRAINING LOG END ---"
           
-          # CRITICAL: Parse the accuracy from the output string (***METRIC_OUTPUT***)
-          # We use grep and awk to reliably extract the float number.
+          # --- CHECK FOR CRITICAL FAILURES ---
+          # Look for the error message intentionally printed by train.py
+          if echo "$TRAINING_OUTPUT" | grep -q "FATAL WORKFLOW ERROR"; then
+              echo "::error::Critical failure detected in train.py. Check logs for the FULL TRACEBACK above."
+              # Force failure if the script reported a FATAL error
+              exit 1 
+          fi
+
+          # --- PARSE METRICS IF NO FATAL ERROR DETECTED ---
+          # Extract the accuracy value
           ACCURACY=$(echo "$TRAINING_OUTPUT" | grep '***METRIC_OUTPUT***' | awk -F'=' '{print $2}' | awk -F'.' '{print $1"."substr($2,1,4)}')
+          
+          if [ -z "$ACCURACY" ]; then
+              echo "::error::Could not extract accuracy score. Model training likely failed silently."
+              exit 1 
+          fi
           
           echo "Extracted Model Accuracy: $ACCURACY"
           
@@ -82,13 +93,12 @@ jobs:
         id: check_gate
         run: |
           # Use 'bc' (basic calculator) for float comparison
-          # This step FAILS the job if the accuracy is too low.
           CURRENT_ACCURACY="${{ steps.train.outputs.accuracy }}"
           MIN_THRESHOLD="${{ env.MIN_ACCURACY_THRESHOLD }}"
 
           if [ -z "$CURRENT_ACCURACY" ] || echo "$CURRENT_ACCURACY < $MIN_THRESHOLD" | bc -l; then
             echo "Model failed Quality Gate. Accuracy $CURRENT_ACCURACY is below $MIN_THRESHOLD."
-            exit 1 # Fail the job
+            exit 1 
           else
             echo "Model passed Quality Gate. Accuracy $CURRENT_ACCURACY is OK."
           fi

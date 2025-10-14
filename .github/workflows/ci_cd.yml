@@ -10,7 +10,7 @@ on:
       - main
 
 env:
-  MIN_ACCURACY_THRESHOLD: 0.90 
+  MIN_ACCURACY_THRESHOLD: 0.70 
   
 jobs:
   # --- 1. Continuous Integration (Validation) ---

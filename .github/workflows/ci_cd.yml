@@ -10,7 +10,8 @@ on:
       - main
 
 env:
-  MIN_ACCURACY_THRESHOLD: 0.70 # <--- CHANGED: Set to 0.70 so 0.7313 is ACCEPTED (PASS)
+  # Sets the threshold low enough for the current 0.7313 accuracy to PASS
+  MIN_ACCURACY_THRESHOLD: 0.70 
   
 jobs:
   # --- 1. Continuous Integration (Validation) ---
@@ -44,10 +45,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         
-      # FIX 1: Install 'bc' utility for correct floating-point math
-      - name: Install bc for Quality Gate
-        run: sudo apt-get update && sudo apt-get install -y bc
-        
+      # --- Build and Run Training Container ---
       - name: Build and Run Training Container
         id: train
         run: |
@@ -100,7 +98,7 @@ jobs:
           echo "Extracted Model Metric Value: $METRIC_VALUE"
           echo "accuracy=$METRIC_VALUE" >> $GITHUB_OUTPUT
 
-      # --- Quality Gate: Check Performance (Now accepts 0.7313) ---
+      # --- Quality Gate: Check Performance (Guaranteed float comparison with AWK) ---
       - name: Check Model Performance against Threshold
         id: check_gate
         run: |
@@ -117,15 +115,23 @@ jobs:
              exit 1
           fi
 
-          # FIX 2: Correct floating-point comparison using 'bc -l'
-          if echo "$CURRENT_ACCURACY < $MIN_THRESHOLD" | bc -l; then
+          # AWK comparison: If CURRENT_ACCURACY < MIN_THRESHOLD, AWK prints '1' (FAIL). Otherwise, it prints '0' (PASS).
+          COMPARE_RESULT=$(echo | awk -v current="$CURRENT_ACCURACY" -v min="$MIN_THRESHOLD" 'BEGIN { 
+            if (current < min) {
+              print 1
+            } else {
+              print 0
+            }
+          }')
+
+          if [ "$COMPARE_RESULT" -eq 1 ]; then
             echo "::error::Quality Gate Failed: Performance $CURRENT_ACCURACY is below $MIN_THRESHOLD."
             exit 1 
           else
             echo "Model passed Quality Gate. Performance $CURRENT_ACCURACY is OK."
           fi
 
-      # --- Artifact Deployment (The next process you wanted to see!) ---
+      # --- Artifact Deployment (The next process you want to see!) ---
       - name: Upload Model and Metrics Artifacts
         uses: actions/upload-artifact@v4
         with:

@@ -13,8 +13,9 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression, LinearRegression, Lasso, Ridge
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, ExtraTreesRegressor
-from sklearn.preprocessing import PolynomialFeatures # For non-linear feature engineering
+from sklearn.preprocessing import PolynomialFeatures 
 from sklearn.metrics import accuracy_score, mean_squared_error, r2_score
+from xgboost import XGBClassifier # NEW: Import XGBoost for higher performance
 
 # --- Configuration ---
 IMAP_SERVER = "imap.gmail.com"
@@ -27,17 +28,19 @@ ATTACHMENT_FILENAME = 'insurance.csv'
 MODEL_FILENAME = 'model.pkl'
 METRICS_FILENAME = 'metrics.txt'
 
-# --- Utility Functions (download_dataset_from_email remains the same for brevity) ---
+# --- Utility Functions (download_dataset_from_email is unchanged) ---
 def download_dataset_from_email() -> pd.DataFrame:
-    """Connects to IMAP, searches for email, and extracts the target CSV attachment."""
+    # ... (Keep this function exactly as it was in the last working version)
+    # [Function body omitted for brevity, assume it is correct and stable]
     
     AGENT_EMAIL = os.getenv('AGENT_EMAIL')
     AGENT_PASSWORD = os.getenv('AGENT_PASSWORD')
-
+    
+    # Check credentials
     if not AGENT_EMAIL or not AGENT_PASSWORD:
         print("FATAL WORKFLOW ERROR: Missing AGENT_EMAIL or AGENT_PASSWORD environment variables.")
         sys.exit(1)
-
+        
     print(f"--- INGESTION: Attempting to connect to email server... (Filters: {SUBJECT_FILTERS})")
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER)
@@ -46,7 +49,6 @@ def download_dataset_from_email() -> pd.DataFrame:
 
         email_parts = []
         for subject in SUBJECT_FILTERS:
-            # Search for emails with the subject, from the last 7 days (or adjust as needed)
             status, messages = mail.search(None, '(UNSEEN SUBJECT "{}")'.format(subject))
             if status == 'OK' and messages[0]:
                 email_parts.extend(messages[0].split())
@@ -58,12 +60,9 @@ def download_dataset_from_email() -> pd.DataFrame:
             print("FATAL WORKFLOW ERROR: NO_NEW_EMAILS_FOUND")
             sys.exit(100)
 
-        # Process the newest email only
         latest_email_id = email_parts[-1]
-        
         status, msg_data = mail.fetch(latest_email_id, '(RFC822)')
-        if status != 'OK':
-            raise ConnectionError(f"Failed to fetch email ID {latest_email_id}")
+        if status != 'OK': raise ConnectionError(f"Failed to fetch email ID {latest_email_id}")
 
         msg = email.message_from_bytes(msg_data[0][1])
         
@@ -103,8 +102,8 @@ def download_dataset_from_email() -> pd.DataFrame:
 def train_model(df: pd.DataFrame):
     """
     Agentic AI function: 
-    1. Determines ML task type (Classification vs. Regression).
-    2. Selects an appropriate advanced model.
+    1. Determines ML task type.
+    2. Selects an advanced, high-performance model (XGBoost).
     3. Trains, evaluates, and saves the model and metrics.
     """
     
@@ -119,37 +118,43 @@ def train_model(df: pd.DataFrame):
     X = df.drop(columns=['charges'])
     y_raw = df['charges']
 
-    # --- Task Determination & Target Preprocessing ---
-    # Agentic decision: Check if target is essentially binary (for classification)
-    is_classification = (y_raw.nunique() < 20 and 
-                         y_raw.dtype in [np.int64, np.int32] and 
-                         (y_raw.max() - y_raw.min()) < 2)
-    
-    # For CI check, we'll force classification as we did before (High/Low charge)
-    if not is_classification:
-        y_class = (y_raw > y_raw.median()).astype(int)
-        
-    y = y_class 
+    # --- Task Determination & Target Preprocessing (Force Classification for CI check) ---
+    y = (y_raw > y_raw.median()).astype(int)
     task_type = "Classification" 
 
-    # --- Agentic Model Selection ---
+    # --- AGENTIC MODEL IMPROVEMENT SELECTION ---
     if task_type == "Classification":
-        # Using a powerful classification model from the imported list
-        print("--- AGENT: Classification task detected. Selecting RandomForestClassifier.")
-        model = RandomForestClassifier(n_estimators=100, random_state=42)
-        model_name = "RandomForestClassifier"
+        print("--- AGENT: Classification task detected.")
+        
+        # Hyperparameter Tuning / Model Upgrade Attempt
+        
+        # 1. Use an optimized Random Forest (more trees)
+        # model = RandomForestClassifier(n_estimators=300, max_depth=10, random_state=42, n_jobs=-1)
+        # model_name = "RandomForest_Optimized"
+        
+        # 2. Use a higher-performance model (XGBoost)
+        print("--- AGENT: Selecting XGBoostClassifier for higher accuracy target (0.90).")
+        model = XGBClassifier(
+            objective='binary:logistic',
+            n_estimators=500,
+            learning_rate=0.05,
+            use_label_encoder=False, 
+            eval_metric='logloss',
+            random_state=42
+        )
+        model_name = "XGBoostClassifier"
         metric_name = "accuracy"
         
-        # Apply Polynomial Features for non-linear modeling (example feature engineering)
+        # Feature Engineering (Polynomial features for non-linearity)
         poly = PolynomialFeatures(degree=2, include_bias=False)
         X = pd.DataFrame(poly.fit_transform(X), columns=poly.get_feature_names_out(X.columns))
         
-    else: # Regression (if you had a true continuous target)
-        # Using a penalized linear model for regression (e.g., Ridge)
+    else: # Regression (Fallback for completeness)
         print("--- AGENT: Regression task detected. Selecting Ridge Regression.")
         model = Ridge(alpha=1.0, random_state=42)
         model_name = "RidgeRegression"
         metric_name = "r2_score"
+
 
     # 2. Split and Train
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
@@ -159,7 +164,7 @@ def train_model(df: pd.DataFrame):
     y_pred = model.predict(X_test)
     
     if task_type == "Classification":
-        metric_value = accuracy_score(y_test, y_pred.round()) # .round() for safety
+        metric_value = accuracy_score(y_test, y_pred.round())
     else:
         metric_value = r2_score(y_test, y_pred)
 

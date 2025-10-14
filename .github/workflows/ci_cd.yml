@@ -10,7 +10,6 @@ on:
       - main
 
 env:
-  # Sets the threshold low enough for the current 0.7313 accuracy to PASS
   MIN_ACCURACY_THRESHOLD: 0.70 
   
 jobs:
@@ -45,18 +44,25 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         
-      # --- Build and Run Training Container ---
+      # --- Build and Run Training Container (FIXED: Added Volume Mount) ---
       - name: Build and Run Training Container
         id: train
         run: |
           IMAGE_NAME="ml-agent-trainer"
+          
+          # 1. Create a directory on the host runner to store the artifacts
+          mkdir -p artifacts
+          
           docker build -t $IMAGE_NAME .
           
           echo "Starting Docker container with email credentials..."
           
+          # 2. Run container, mapping the host 'artifacts' folder to '/app/output' inside the container
+          #    Files saved by train.py to /app/output are now accessible on the host via ./artifacts
           docker run \
             -e AGENT_EMAIL="${{ secrets.AGENT_EMAIL }}" \
             -e AGENT_PASSWORD="${{ secrets.AGENT_PASSWORD }}" \
+            -v $(pwd)/artifacts:/app/output \
             $IMAGE_NAME python train.py > train_output.log 2>&1 || true
 
           DOCKER_EXIT_CODE=$?
@@ -98,7 +104,7 @@ jobs:
           echo "Extracted Model Metric Value: $METRIC_VALUE"
           echo "accuracy=$METRIC_VALUE" >> $GITHUB_OUTPUT
 
-      # --- Quality Gate: Check Performance (Guaranteed float comparison with AWK) ---
+      # --- Quality Gate: Check Performance (Using reliable AWK comparison) ---
       - name: Check Model Performance against Threshold
         id: check_gate
         run: |
@@ -115,7 +121,6 @@ jobs:
              exit 1
           fi
 
-          # AWK comparison: If CURRENT_ACCURACY < MIN_THRESHOLD, AWK prints '1' (FAIL). Otherwise, it prints '0' (PASS).
           COMPARE_RESULT=$(echo | awk -v current="$CURRENT_ACCURACY" -v min="$MIN_THRESHOLD" 'BEGIN { 
             if (current < min) {
               print 1
@@ -131,12 +136,10 @@ jobs:
             echo "Model passed Quality Gate. Performance $CURRENT_ACCURACY is OK."
           fi
 
-      # --- Artifact Deployment (The next process you want to see!) ---
+      # --- Artifact Deployment (FIXED: Path is now the host directory 'artifacts/') ---
       - name: Upload Model and Metrics Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: model-artifact-${{ steps.train.outputs.accuracy }}
-          path: |
-            model.pkl
-            metrics.txt
+          path: artifacts/ # <--- The upload step now looks here on the host runner
           retention-days: 7

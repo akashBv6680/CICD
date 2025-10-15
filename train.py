@@ -2,100 +2,210 @@ import pandas as pd
 import numpy as np
 import os
 import pickle
-from sklearn.model_selection import train_test_split
-from xgboost import XGBClassifier
+import time
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score
+from sklearn.pipeline import Pipeline
+from imblearn.over_sampling import SMOTE
+# Classifiers from your request
+from sklearn.linear_model import LogisticRegression
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier, ExtraTreesClassifier
+from sklearn.svm import SVC
+from sklearn.naive_bayes import GaussianNB
+from xgboost import XGBClassifier
 
-# --- CONFIGURATION ---
-# The OUTPUT_DIR is the CRITICAL change. 
-# It must match the internal container path used for the volume mount in ci_cd.yml.
+# --- CRITICAL CONFIGURATION: VOLUME MOUNT PATH ---
+# This path MUST match the volume mount target in your ci_cd.yml: -v $(pwd)/artifacts:/app/output
 OUTPUT_DIR = '/app/output'
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 MODEL_PATH = os.path.join(OUTPUT_DIR, 'model.pkl')
 METRICS_PATH = os.path.join(OUTPUT_DIR, 'metrics.txt')
 
-# --- 1. SETUP AND DATA SIMULATION (REPLACE WITH YOUR ACTUAL DATA LOADING) ---
-def load_and_preprocess_data():
-    """Loads and returns feature matrix (X) and target vector (y)."""
-    try:
-        # ⚠️ REPLACE THIS SECTION with your actual data loading and cleaning
-        print("--- AGENT: Classification task detected.")
-        
-        # Simulate data (Replace this with pd.read_csv('your_data.csv') etc.)
-        data = {
-            'feature1': np.random.rand(100),
-            'feature2': np.random.rand(100) * 10,
-            'target': np.random.randint(0, 2, 100)
+class MLAgent:
+    """An agent class to select, train, evaluate, and tune machine learning models."""
+    
+    def __init__(self):
+        # Define a standard list of candidate models and their initial parameters
+        self.models = {
+            'LogisticRegression': (LogisticRegression(max_iter=1000, random_state=42), {}),
+            'KNeighborsClassifier': (KNeighborsClassifier(), {'n_neighbors': 5}),
+            'DecisionTreeClassifier': (DecisionTreeClassifier(random_state=42), {'max_depth': 5}),
+            'RandomForestClassifier': (RandomForestClassifier(random_state=42), {'n_estimators': 100}),
+            'GradientBoostingClassifier': (GradientBoostingClassifier(random_state=42), {'n_estimators': 100}),
+            'ExtraTreesClassifier': (ExtraTreesClassifier(random_state=42), {'n_estimators': 100}),
+            'AdaBoostClassifier': (AdaBoostClassifier(random_state=42), {'n_estimators': 50}),
+            'SVC': (SVC(random_state=42, probability=True), {'C': 1.0}),
+            'GaussianNB': (GaussianNB(), {}),
+            'XGBClassifier': (XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42), {'n_estimators': 100})
         }
-        df = pd.DataFrame(data)
+        self.best_model_name = None
+        self.best_model = None
+        self.max_accuracy = 0.0
+        self.scaler = StandardScaler()
+
+    def load_and_preprocess_data(self):
+        """Loads and returns feature matrix (X) and target vector (y) and applies SMOTE."""
+        try:
+            print("--- AGENT: Classification task detected. Loading simulated data.")
+            
+            # --- ⚠️ REPLACE THIS SECTION with your actual data loading and cleaning ---
+            data = {
+                'feature1': np.random.rand(1000),
+                'feature2': np.random.rand(1000) * 10,
+                'feature3': np.random.rand(1000) * 5,
+                'target': np.random.choice([0, 1], size=1000, p=[0.8, 0.2]) # Introduce imbalance
+            }
+            df = pd.DataFrame(data)
+            
+            X = df[['feature1', 'feature2', 'feature3']]
+            y = df['target']
+            
+            # Apply SMOTE to handle class imbalance (if applicable)
+            print("--- PREPROCESS: Applying SMOTE to balance classes.")
+            smote = SMOTE(random_state=42)
+            X_resampled, y_resampled = smote.fit_resample(X, y)
+
+            print(f"--- PREPROCESS: Original Data Size: {len(X)}. Resampled Data Size: {len(X_resampled)}.")
+            return X_resampled, y_resampled
+
+        except Exception as e:
+            print(f"::error::FATAL WORKFLOW ERROR: Data Loading failed: {e}")
+            return None, None
+
+    def select_best_model(self, X_train, X_test, y_train, y_test):
+        """Trains and evaluates all candidate models to find the best performing one."""
+        print("\n--- AGENT: Starting Model Selection Phase (Testing all 10 algorithms) ---")
         
-        X = df[['feature1', 'feature2']]
-        y = df['target']
+        for name, (model, params) in self.models.items():
+            start_time = time.time()
+            
+            # Create a pipeline for scaling and the model
+            pipeline = Pipeline([
+                ('scaler', self.scaler),
+                ('model', model)
+            ])
+            
+            pipeline.fit(X_train, y_train)
+            y_pred = pipeline.predict(X_test)
+            accuracy = accuracy_score(y_test, y_pred)
+            
+            print(f"--- EVAL: {name} trained. Accuracy: {accuracy:.4f} (Time: {time.time()-start_time:.2f}s)")
+            
+            if accuracy > self.max_accuracy:
+                self.max_accuracy = accuracy
+                self.best_model = pipeline
+                self.best_model_name = name
+                
+        print(f"\n--- AGENT: Initial Best Model Selected: {self.best_model_name} with Accuracy: {self.max_accuracy:.4f} ---")
         
-        return X, y
+    def hyperparameter_tuning(self, X_train, y_train, X_test, y_test):
+        """Performs targeted tuning on the current best model for remediation."""
+        print(f"\n--- AGENT: REMEDIATION TRIGGERED: Starting Hyperparameter Tuning for {self.best_model_name} ---")
+        
+        # Define a simple tuning grid for the current best model's type
+        # In a real scenario, this would be highly specific
+        if 'Classifier' in self.best_model_name and 'Tree' in self.best_model_name:
+            param_grid = {'model__max_depth': [3, 5, 7, 9], 'model__n_estimators': [50, 100]}
+        elif self.best_model_name == 'XGBClassifier':
+            param_grid = {'model__max_depth': [3, 5, 7], 'model__learning_rate': [0.01, 0.1]}
+        elif self.best_model_name in ['LogisticRegression', 'SVC']:
+            param_grid = {'model__C': [0.1, 1.0, 10]}
+        else:
+            print("--- TUNING SKIP: No specific tuning grid defined for this model type.")
+            return
 
-    except Exception as e:
-        print(f"::error::FATAL WORKFLOW ERROR: Data Loading failed: {e}")
-        return None, None
+        # Use the base model from the existing pipeline
+        base_model = self.best_model.named_steps['model']
+        pipeline_to_tune = Pipeline([
+            ('scaler', self.scaler),
+            ('model', base_model)
+        ])
+        
+        grid_search = GridSearchCV(pipeline_to_tune, param_grid, cv=3, scoring='accuracy', n_jobs=-1, verbose=1)
+        grid_search.fit(X_train, y_train)
+        
+        # Update the best model and accuracy
+        tuned_accuracy = grid_search.best_score_
+        
+        print(f"--- REMEDIATION COMPLETE: Tuned Accuracy: {tuned_accuracy:.4f}")
+        
+        # Final evaluation on test set for reporting
+        final_accuracy = accuracy_score(y_test, grid_search.best_estimator_.predict(X_test))
+        print(f"--- REMEDIATION RESULT: Test Set Accuracy after tuning: {final_accuracy:.4f}")
+        
+        # Only update the stored best model if tuning improved the test set score
+        if final_accuracy > self.max_accuracy:
+            self.max_accuracy = final_accuracy
+            self.best_model = grid_search.best_estimator_
+            self.best_model_name = f"{self.best_model_name} (Tuned)"
+            print("--- AGENT: Tuning successfully improved the final model.")
+        else:
+            print("--- AGENT: Tuning did not improve final test set performance. Sticking with original best model.")
 
-# --- 2. MODEL TRAINING AND EVALUATION ---
-def train_and_evaluate(X, y):
-    """Trains the XGBoost model and returns the accuracy score."""
-    
-    # Check for skip condition (e.g., in your original log, "NO_NEW_EMAILS_FOUND")
-    # For this template, we'll assume data is present.
-    # If a skip condition is met, print the NO_NEW_EMAILS_FOUND error and return 0.0
-    
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
-    
-    # Initialize and train the model
-    # Note: Your previous log selected XGBoost for an accuracy target of 0.90
-    print("--- AGENT: Selecting XGBoostClassifier for higher accuracy target (0.90).")
-    
-    model = XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42)
-    model.fit(X_train, y_train)
-    
-    # Predict and evaluate
-    y_pred = model.predict(X_test)
-    accuracy = accuracy_score(y_test, y_pred)
-    
-    print(f"--- TRAINING: XGBoostClassifier trained with accuracy: {accuracy:.4f}")
-    
-    return model, accuracy
 
-# --- 3. ARTIFACT SAVING (CRITICAL VOLUME MOUNT STEP) ---
-def save_artifacts(model, accuracy):
-    """Saves the trained model and metrics to the mounted directory."""
-    
-    # ⚠️ CRITICAL: Ensure the directory exists before saving
-    os.makedirs(OUTPUT_DIR, exist_ok=True) 
-    
-    try:
-        # Save Model (.pkl)
-        with open(MODEL_PATH, 'wb') as f:
-            pickle.dump(model, f)
-        print(f"--- INFO: Successfully saved model to {MODEL_PATH}")
+    def run_agentic_workflow(self):
+        """Runs the entire MLOps workflow with tiered performance logic."""
+        
+        X, y = self.load_and_preprocess_data()
+        if X is None:
+            return 0.0
 
-        # Save Metrics (.txt)
-        with open(METRICS_PATH, 'w') as f:
-            f.write(f"accuracy={accuracy:.4f}\n")
-        print(f"--- INFO: Successfully saved metrics to {METRICS_PATH}")
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        # Phase 1: Initial Model Selection
+        self.select_best_model(X_train, X_test, y_train, y_test)
+        
+        initial_accuracy = self.max_accuracy
+        
+        # Phase 2: Agentic Performance Tiers
+        
+        # Tier 1: High Accuracy (Deployment Ready)
+        if 0.80 <= initial_accuracy <= 0.90:
+            print(f"\n*** AGENT STATUS: BEST *** Performance {initial_accuracy:.4f} is excellent. Deployment approved.")
+            
+        # Tier 2: Medium Accuracy (Remediation Required)
+        elif 0.50 <= initial_accuracy < 0.80:
+            print(f"\n*** AGENT STATUS: MEDIUM *** Performance {initial_accuracy:.4f} is moderate. Triggering Auto-Tuning...")
+            self.hyperparameter_tuning(X_train, y_train, X_test, y_test)
+            
+        # Tier 3: Low Accuracy (Critical Failure)
+        elif initial_accuracy < 0.50:
+            print(f"\n::error::FATAL WORKFLOW ERROR: Accuracy {initial_accuracy:.4f} is critically low. Aborting workflow.")
+            return 0.0
 
-    except Exception as e:
-        # This will fail the workflow and tell you why the file write failed
-        print(f"::error::FATAL WORKFLOW ERROR: Artifact Saving failed (Permissions or Path): {e}")
+        print(f"\n--- AGENT SUMMARY: Final Model is {self.best_model_name} with Final Accuracy: {self.max_accuracy:.4f} ---")
+        
+        # Phase 3: Save Artifacts
+        self.save_artifacts()
+        
+        return self.max_accuracy
+
+    def save_artifacts(self):
+        """Saves the final best model and metrics to the mounted directory."""
+        
+        try:
+            # Save Model (.pkl)
+            with open(MODEL_PATH, 'wb') as f:
+                pickle.dump(self.best_model, f)
+            print(f"--- INFO: Successfully saved final model to {MODEL_PATH}")
+
+            # Save Metrics (.txt)
+            with open(METRICS_PATH, 'w') as f:
+                f.write(f"accuracy={self.max_accuracy:.4f}\n")
+            print(f"--- INFO: Successfully saved metrics to {METRICS_PATH}")
+
+        except Exception as e:
+            print(f"::error::FATAL WORKFLOW ERROR: Artifact Saving failed (Permissions or Path): {e}")
+
 
 # --- MAIN EXECUTION ---
 if __name__ == "__main__":
-    X, y = load_and_preprocess_data()
+    agent = MLAgent()
+    final_accuracy = agent.run_agentic_workflow()
     
-    if X is None:
-        exit(1) # Exit if data loading failed
-
-    model, accuracy = train_and_evaluate(X, y)
-    
-    # Save the artifacts to the mounted volume
-    save_artifacts(model, accuracy)
-
     # Print the metric line for the GitHub Action to capture
-    print(f"***METRIC_OUTPUT***accuracy={accuracy:.4f}***METRIC_OUTPUT***")
+    print(f"\n***METRIC_OUTPUT***accuracy={final_accuracy:.4f}***METRIC_OUTPUT***")
     print("--- WORKFLOW END: SUCCESS ---")

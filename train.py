@@ -8,7 +8,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score
 from sklearn.pipeline import Pipeline
 from imblearn.over_sampling import SMOTE
-# Classifiers from your request
+# --- CLASSIFICATION MODELS (From previous version) ---
 from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
@@ -16,9 +16,15 @@ from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier,
 from sklearn.svm import SVC
 from sklearn.naive_bayes import GaussianNB
 from xgboost import XGBClassifier
+# --- REGRESSION MODELS (NEW ADDITIONS) ---
+from sklearn.linear_model import LinearRegression, Lasso, Ridge, ElasticNet
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, ExtraTreesRegressor, AdaBoostRegressor
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.svm import SVR
+import xgboost as xgb # Re-imported for clarity, though already imported via XGBClassifier
 
 # --- CRITICAL CONFIGURATION: VOLUME MOUNT PATH ---
-# This path MUST match the volume mount target in your ci_cd.yml: -v $(pwd)/artifacts:/app/output
 OUTPUT_DIR = '/app/output'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 MODEL_PATH = os.path.join(OUTPUT_DIR, 'model.pkl')
@@ -28,8 +34,8 @@ class MLAgent:
     """An agent class to select, train, evaluate, and tune machine learning models."""
     
     def __init__(self):
-        # Define a standard list of candidate models and their initial parameters
-        self.models = {
+        # --- List of all Classification Models (Focus of this script) ---
+        self.classification_models = {
             'LogisticRegression': (LogisticRegression(max_iter=1000, random_state=42), {}),
             'KNeighborsClassifier': (KNeighborsClassifier(), {'n_neighbors': 5}),
             'DecisionTreeClassifier': (DecisionTreeClassifier(random_state=42), {'max_depth': 5}),
@@ -41,6 +47,26 @@ class MLAgent:
             'GaussianNB': (GaussianNB(), {}),
             'XGBClassifier': (XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42), {'n_estimators': 100})
         }
+        
+        # --- List of all Regression Models (For future expansion, currently unused in core logic) ---
+        self.regression_models = {
+            'LinearRegression': (LinearRegression(), {}),
+            'Lasso': (Lasso(random_state=42), {'alpha': 1.0}),
+            'Ridge': (Ridge(random_state=42), {'alpha': 1.0}),
+            'ElasticNet': (ElasticNet(random_state=42), {'alpha': 1.0}),
+            'KNeighborsRegressor': (KNeighborsRegressor(), {'n_neighbors': 5}),
+            'DecisionTreeRegressor': (DecisionTreeRegressor(random_state=42), {'max_depth': 5}),
+            'RandomForestRegressor': (RandomForestRegressor(random_state=42), {'n_estimators': 100}),
+            'GradientBoostingRegressor': (GradientBoostingRegressor(random_state=42), {'n_estimators': 100}),
+            'ExtraTreesRegressor': (ExtraTreesRegressor(random_state=42), {'n_estimators': 100}),
+            'AdaBoostRegressor': (AdaBoostRegressor(random_state=42), {'n_estimators': 50}),
+            'SVR': (SVR(), {'C': 1.0}),
+            'XGBRegressor': (xgb.XGBRegressor(eval_metric='rmse', random_state=42), {'n_estimators': 100})
+        }
+
+        # Set the active model list to classification for the current pipeline logic
+        self.models = self.classification_models 
+
         self.best_model_name = None
         self.best_model = None
         self.max_accuracy = 0.0
@@ -49,6 +75,7 @@ class MLAgent:
     def load_and_preprocess_data(self):
         """Loads and returns feature matrix (X) and target vector (y) and applies SMOTE."""
         try:
+            # Note: The agent is currently hardcoded for classification based on the target logic
             print("--- AGENT: Classification task detected. Loading simulated data.")
             
             # --- ⚠️ REPLACE THIS SECTION with your actual data loading and cleaning ---
@@ -56,14 +83,14 @@ class MLAgent:
                 'feature1': np.random.rand(1000),
                 'feature2': np.random.rand(1000) * 10,
                 'feature3': np.random.rand(1000) * 5,
-                'target': np.random.choice([0, 1], size=1000, p=[0.8, 0.2]) # Introduce imbalance
+                'target': np.random.choice([0, 1], size=1000, p=[0.8, 0.2]) 
             }
             df = pd.DataFrame(data)
             
             X = df[['feature1', 'feature2', 'feature3']]
             y = df['target']
             
-            # Apply SMOTE to handle class imbalance (if applicable)
+            # Apply SMOTE to handle class imbalance
             print("--- PREPROCESS: Applying SMOTE to balance classes.")
             smote = SMOTE(random_state=42)
             X_resampled, y_resampled = smote.fit_resample(X, y)
@@ -77,12 +104,11 @@ class MLAgent:
 
     def select_best_model(self, X_train, X_test, y_train, y_test):
         """Trains and evaluates all candidate models to find the best performing one."""
-        print("\n--- AGENT: Starting Model Selection Phase (Testing all 10 algorithms) ---")
+        print(f"\n--- AGENT: Starting Model Selection Phase (Testing {len(self.models)} Classification algorithms) ---")
         
         for name, (model, params) in self.models.items():
             start_time = time.time()
             
-            # Create a pipeline for scaling and the model
             pipeline = Pipeline([
                 ('scaler', self.scaler),
                 ('model', model)
@@ -106,7 +132,6 @@ class MLAgent:
         print(f"\n--- AGENT: REMEDIATION TRIGGERED: Starting Hyperparameter Tuning for {self.best_model_name} ---")
         
         # Define a simple tuning grid for the current best model's type
-        # In a real scenario, this would be highly specific
         if 'Classifier' in self.best_model_name and 'Tree' in self.best_model_name:
             param_grid = {'model__max_depth': [3, 5, 7, 9], 'model__n_estimators': [50, 100]}
         elif self.best_model_name == 'XGBClassifier':
@@ -114,25 +139,20 @@ class MLAgent:
         elif self.best_model_name in ['LogisticRegression', 'SVC']:
             param_grid = {'model__C': [0.1, 1.0, 10]}
         else:
-            print("--- TUNING SKIP: No specific tuning grid defined for this model type.")
+            print("--- TUNING SKIP: No specific tuning grid defined for this model type. Remediation skipped.")
             return
 
-        # Use the base model from the existing pipeline
         base_model = self.best_model.named_steps['model']
         pipeline_to_tune = Pipeline([
             ('scaler', self.scaler),
             ('model', base_model)
         ])
         
+        # GridSearch will find the best model parameters
         grid_search = GridSearchCV(pipeline_to_tune, param_grid, cv=3, scoring='accuracy', n_jobs=-1, verbose=1)
         grid_search.fit(X_train, y_train)
         
-        # Update the best model and accuracy
-        tuned_accuracy = grid_search.best_score_
-        
-        print(f"--- REMEDIATION COMPLETE: Tuned Accuracy: {tuned_accuracy:.4f}")
-        
-        # Final evaluation on test set for reporting
+        # Evaluate the tuned model on the test set
         final_accuracy = accuracy_score(y_test, grid_search.best_estimator_.predict(X_test))
         print(f"--- REMEDIATION RESULT: Test Set Accuracy after tuning: {final_accuracy:.4f}")
         
